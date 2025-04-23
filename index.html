@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp API Client</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    .card {
+      box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .tabs {
+      display: flex;
+      margin-bottom: 20px;
+    }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border: 1px solid #ddd;
+      background: #f1f1f1;
+      border-radius: 4px 4px 0 0;
+      margin-right: 5px;
+    }
+    .tab.active {
+      background: #4CAF50;
+      color: white;
+      border-color: #4CAF50;
+    }
+    .tab-content {
+      display: none;
+      padding: 20px;
+      border: 1px solid #ddd;
+      border-radius: 0 4px 4px 4px;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    input, button {
+      padding: 10px;
+      margin: 5px 0;
+    }
+    button {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background: #45a049;
+    }
+    button:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
+    }
+    #output {
+      margin-top: 20px;
+      min-height: 200px;
+    }
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(0,0,0,.3);
+      border-radius: 50%;
+      border-top-color: #4CAF50;
+      animation: spin 1s ease-in-out infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .status {
+      padding: 10px;
+      margin-top: 10px;
+      border-radius: 4px;
+    }
+    .status.success {
+      background-color: #d4edda;
+      color: #155724;
+    }
+    .status.error {
+      background-color: #f8d7da;
+      color: #721c24;
+    }
+    .status.info {
+      background-color: #d1ecf1;
+      color: #0c5460;
+    }
+    .status.warning {
+      background-color: #fff3cd;
+      color: #856404;
+    }
+    #messageForm {
+      margin-top: 20px;
+      display: none;
+    }
+    pre {
+      background: #f4f4f4;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 18px;
+      letter-spacing: 4px;
+    }
+    .pairing-methods {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .notice {
+      margin-top: 10px;
+      font-size: 0.9em;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+  <h1>WhatsApp API Client</h1>
+  
+  <div class="card">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('qr')">QR Code Login</div>
+      <div class="tab" onclick="switchTab('pairing')">Pairing Code Login</div>
+      <div class="tab" onclick="switchTab('message')">Send Message</div>
+    </div>
+    
+    <div id="qrTab" class="tab-content active">
+      <p>Connect to WhatsApp using QR code scan</p>
+      <button id="generateQrBtn" onclick="startQR()">Generate QR Code</button>
+      <button onclick="logout('qr')">Logout QR Session</button>
+    </div>
+    
+    <div id="pairingTab" class="tab-content">
+      <p>Connect to WhatsApp using phone number pairing</p>
+      <div class="status info">
+        Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
+      </div>
+      <input type="text" id="phone" placeholder="Phone number with country code (e.g., 628123456789)" />
+      
+      <div class="pairing-methods">
+        <button id="pairingBtn" onclick="requestPairing()">Request Pairing Code (Method 1)</button>
+        <button id="directPairingBtn" onclick="requestDirectPairing()">Request Pairing Code (Method 2)</button>
+      </div>
+      
+      <div class="notice">
+        If one method doesn't work, try the other method. Make sure your phone number is in the correct format with country code.
+      </div>
+      
+      <button onclick="logout('pairing')">Logout Pairing Session</button>
+    </div>
+    
+    <div id="messageTab" class="tab-content">
+      <p>Send a WhatsApp message</p>
+      <div id="messageForm">
+        <input type="text" id="recipient" placeholder="Recipient number (e.g., 628123456789)" />
+        <textarea id="messageText" placeholder="Message text" rows="4" style="width: 100%; padding: 10px;"></textarea>
+        <select id="clientMode">
+          <option value="qr">QR Client</option>
+          <option value="pairing">Pairing Client</option>
+        </select>
+        <button onclick="sendMessage()">Send Message</button>
+      </div>
+      <div id="messageStatus" class="status info">
+        You need to login first using either QR code or Pairing code.
+      </div>
+    </div>
+  </div>
+  
+  <div class="card">
+    <h2>Status</h2>
+    <div id="output">
+      <div class="status info">Ready to connect. Choose a login method to start.</div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let connectionStatus = {
+      qr: false,
+      pairing: false
+    };
+    let isProcessing = false;
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      
+      document.querySelector(`.tab:nth-child(${tabName === 'qr' ? 1 : tabName === 'pairing' ? 2 : 3})`).classList.add('active');
+      document.getElementById(`${tabName}Tab`).classList.add('active');
+      
+      // Update message form visibility based on connection
+      updateMessageFormVisibility();
+    }
+
+    function updateMessageFormVisibility() {
+      const messageForm = document.getElementById('messageForm');
+      const messageStatus = document.getElementById('messageStatus');
+      
+      if (connectionStatus.qr || connectionStatus.pairing) {
+        messageForm.style.display = 'block';
+        messageStatus.style.display = 'none';
+      } else {
+        messageForm.style.display = 'none';
+        messageStatus.style.display = 'block';
+      }
+      
+      // Update client mode dropdown
+      const clientMode = document.getElementById('clientMode');
+      clientMode.innerHTML = '';
+      
+      if (connectionStatus.qr) {
+        const option = document.createElement('option');
+        option.value = 'qr';
+        option.textContent = 'QR Client';
+        clientMode.appendChild(option);
+      }
+      
+      if (connectionStatus.pairing) {
+        const option = document.createElement('option');
+        option.value = 'pairing';
+        option.textContent = 'Pairing Client';
+        clientMode.appendChild(option);
+      }
+    }
+
+    function setProcessing(isProcessingNow) {
+      isProcessing = isProcessingNow;
+      const buttons = document.querySelectorAll('button');
+      buttons.forEach(btn => {
+        btn.disabled = isProcessingNow;
+      });
+      
+      if (isProcessingNow) {
+        showStatus('Processing request...', 'info');
+      }
+    }
+
+    function startQR() {
+      setProcessing(true);
+      showStatus('Requesting QR code...', 'info');
+      
+      fetch("/login/qr")
+        .then(response => response.json())
+        .then(data => {
+          if (!data.status) {
+            showStatus('Error: ' + data.error, 'error');
+          }
+          setProcessing(false);
+        })
+        .catch(error => {
+          showStatus('Error: ' + error, 'error');
+          setProcessing(false);
+        });
+    }
+
+    function requestPairing() {
+      const number = document.getElementById("phone").value.trim();
+      if (!number) {
+        showStatus('Please enter a valid phone number', 'error');
+        return;
+      }
+      
+      setProcessing(true);
+      showStatus('Requesting pairing code... Please wait up to 15 seconds', 'info');
+      
+      fetch("/pairing-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number }),
+      })
+        .then(response => response.json())
+        .then(data => {
+          if (!data.status) {
+            showStatus('Error: ' + data.error, 'error');
+          }
+          // Don't set processing to false yet as it's running in the background
+        })
+        .catch(error => {
+          showStatus('Error: ' + error, 'error');
+          setProcessing(false);
+        });
+    }
+    
+    function requestDirectPairing() {
+      const number = document.getElementById("phone").value.trim();
+      if (!number) {
+        showStatus('Please enter a valid phone number', 'error');
+        return;
+      }
+      
+      setProcessing(true);
+      showStatus('Requesting pairing code with direct method...', 'info');
+      
+      fetch("/pairing-direct", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number }),
+      })
+        .then(response => response.json())
+        .then(data => {
+          if (!data.status) {
+            showStatus('Error: ' + data.error, 'error');
+            setProcessing(false);
+          }
+        })
+        .catch(error => {
+          showStatus('Error: ' + error, 'error');
+          setProcessing(false);
+        });
+    }
+    
+    function sendMessage() {
+      const recipient = document.getElementById("recipient").value.trim();
+      const message = document.getElementById("messageText").value.trim();
+      const mode = document.getElementById("clientMode").value;
+      
+      if (!recipient || !message) {
+        showStatus('Please enter both recipient number and message', 'error');
+        return;
+      }
+      
+      setProcessing(true);
+      showStatus('Sending message...', 'info');
+      
+      fetch("/send-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number: recipient, message, mode }),
+      })
+        .then(response => response.json())
+        .then(data => {
+          if (data.status) {
+            showStatus('Message sent successfully!', 'success');
+          } else {
+            showStatus('Error: ' + data.error, 'error');
+          }
+          setProcessing(false);
+        })
+        .catch(error => {
+          showStatus('Error: ' + error, 'error');
+          setProcessing(false);
+        });
+    }
+    
+    function logout(mode) {
+      setProcessing(true);
+      showStatus(`Logging out ${mode} session...`, 'info');
+      
+      fetch(`/logout/${mode}`)
+        .then(response => response.json())
+        .then(data => {
+          if (data.status) {
+            showStatus(data.message, 'success');
+            connectionStatus[mode] = false;
+            updateMessageFormVisibility();
+          } else {
+            showStatus('Error: ' + data.error, 'error');
+          }
+          setProcessing(false);
+        })
+        .catch(error => {
+          showStatus('Error: ' + error, 'error');
+          setProcessing(false);
+        });
+    }
+    
+    function showStatus(message, type = 'info') {
+      const output = document.getElementById('output');
+      output.innerHTML = `<div class="status ${type}">${message}</div>`;
+    }
+
+    // Socket events
+    socket.on("qr", (qr) => {
+      setProcessing(false);
+      document.getElementById('output').innerHTML = `
+        <div class="status info">Scan this QR code with your WhatsApp:</div>
+        <img src="${qr}" alt="WhatsApp QR Code" style="max-width: 300px; margin-top: 10px;">
+      `;
+    });
+
+    socket.on("pairing-code", (code) => {
+      setProcessing(false);
+      document.getElementById('output').innerHTML = `
+        <div class="status info">Enter this code in your WhatsApp:</div>
+        <pre>${code}</pre>
+        <div class="status info">Open WhatsApp > Settings > Linked Devices > Link a Device</div>
+      `;
+    });
+
+    socket.on("authenticated", (user) => {
+      setProcessing(false);
+      connectionStatus[user.mode] = true;
+      updateMessageFormVisibility();
+      
+      document.getElementById('output').innerHTML = `
+        <div class="status success">
+          ✅ Connected to WhatsApp!<br>
+          Name: ${user.name}<br>
+          Number: ${user.number}<br>
+          Method: ${user.mode === 'qr' ? 'QR Code' : 'Pairing Code'}
+        </div>
+      `;
+      
+      // Auto-switch to message tab
+      switchTab('message');
+    });
+
+    socket.on("disconnected", (msg) => {
+      setProcessing(false);
+      connectionStatus.qr = false;
+      connectionStatus.pairing = false;
+      updateMessageFormVisibility();
+      
+      document.getElementById('output').innerHTML = `
+        <div class="status error">❌ Disconnected: ${msg}</div>
+      `;
+    });
+    
+    socket.on("error", (msg) => {
+      setProcessing(false);
+      showStatus(msg, 'error');
+    });
+    
+    // Check initial connection status
+    fetch("/status")
+      .then(response => response.json())
+      .then(data => {
+        connectionStatus.qr = data.qrClient === "connected";
+        connectionStatus.pairing = data.pairingClient === "connected";
+        updateMessageFormVisibility();
+        
+        if (connectionStatus.qr || connectionStatus.pairing) {
+          showStatus('Already connected. You can send messages now.', 'success');
+        }
+      })
+      .catch(error => {
+        console.error("Status check error:", error);
+      });
+  </script>
+</body>
+</html>
